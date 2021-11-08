@@ -1,5 +1,25 @@
-import { Client, Intents } from 'discord.js'
-import { fetch } from 'medusa';
+const { Client } = require("discord.js");
+const dotenv = require("dotenv");
+const APIs = require("apis");
+
+const {
+    getVoiceConnection,
+    joinVoiceChannel,
+    createAudioPlayer,
+    createAudioResource,
+    entersState,
+    VoiceConnectionStatus,
+    NoSubscriberBehavior,
+} = require("@discordjs/voice");
+
+
+/////////////////////////////////////////
+//  DOTENV
+/////////////////////////////////////////
+
+
+// Load .env file.
+dotenv.config();
 
 
 /////////////////////////////////////////
@@ -7,27 +27,52 @@ import { fetch } from 'medusa';
 /////////////////////////////////////////
 
 
-const client    = new Client({ intents: [ Intents.FLAGS.GUILDS, Intents.FLAGS.GUILD_VOICE_STATES, Intents.FLAGS.GUILD_MESSAGES ] });
-const broadcast = client.voice.createBroadcast();
+const player = createAudioPlayer({
+    behaviors: {
+        noSubscriber    : NoSubscriberBehavior.Play,
+        maxMissedFrames : Math.round(5000 / 20),
+    }
+});
 
-//  UTILS
+const client = new Client({
+    intents: [
+        "GUILDS",
+        "GUILD_VOICE_STATES",
+        "GUILD_MESSAGES"
+    ]
+});
 
-async function joinLiveStage(guild) {
-    let connection;
+// Start music.
+APIs.fetch(`GET`, `https://chai5she.cdn.dvmr.fr/bfmtv`, { stream: true }).then(stream => {
+    player.play(createAudioResource(stream));
+});
 
-    for (let [id, channel] of guild.channels.cache) {
-        if (channel.type == 'stage' && channel.name == "BFM TV") {
-            console.log(`Joining ${id}.`);
 
-            // Set stage topic.
-            await channel.setTopic('Live Radio').catch(console.error);
+/////////////////////////////////////////
+//  MUSIC
+/////////////////////////////////////////
 
-            // Join channel.
-            connection = await channel.join();
-            connection.voice.setSuppressed(false);
-            connection.play(broadcast);
-            return;
-        }
+
+async function joinChannel(voiceChannel) {
+    let connection = joinVoiceChannel({
+        channelId       : voiceChannel.id,
+        guildId         : voiceChannel.guild.id,
+        adapterCreator  : voiceChannel.guild.voiceAdapterCreator,
+        selfDeaf        : false,
+        selfMute        : false
+    });
+
+    try {
+        await entersState(connection, VoiceConnectionStatus.Ready, 30000);
+
+        // Subscribe player.
+        connection.subscribe(player);
+
+        return connection;
+
+    } catch (err) {
+        connection.destroy();
+        throw (err);
     }
 }
 
@@ -40,42 +85,32 @@ async function joinLiveStage(guild) {
 client.on('ready', function () {
     console.log(`${client.user.tag} ready !`);
 
-    //  PRESENCE
-
+    // Set presence.
     client.user.setPresence({
         activity: {
-            name    : 'Live Radio',
-            type    : 'WATCHING'
+            type    : "LISTENING",
+            name    : "BFMTV",
         }
     });
-
-    //  AUTO JOIN
-
-    for (let [_, guild] of client.guilds.cache)
-        joinLiveStage(guild).catch(console.error);
 });
 
-client.on('message', function (message) {
-    if (message.content == '/bfmtv join') {
-        message.delete().catch(console.error);
-        joinLiveStage(message.guild).catch(console.error);
-    }
+client.on('messageCreate', function (message) {
+    switch (message.content) {
+        case "bfmtv join":
+            // Delete message.
+            message.delete().catch(console.error);
 
-    if (message.content == '/bfmtv quit') {
-        message.delete().catch(console.error);
+            // Join channel.
+            joinChannel(message.member.voice.channel);
+            break;
 
-        let me = message.guild.me;
+        case "bfmtv quit":
+            // Delete message.
+            message.delete().catch(console.error);
 
-        if (me.voice) {
-            me.voice.connection.disconnect();
-            me.voice.channel.setTopic('').catch(console.error);
-        }
-    }
-});
-
-client.on('voiceStateUpdate', function (oldState, newState) {
-    if (oldState.requestToSpeakTimestamp == null && newState.requestToSpeakTimestamp) {
-        newState.setSuppressed(false);
+            // Leave channel.
+            getVoiceConnection(message.guild.id).destroy();
+            break;
     }
 });
 
@@ -85,8 +120,4 @@ client.on('voiceStateUpdate', function (oldState, newState) {
 /////////////////////////////////////////
 
 
-fetch('GET', 'https://chai5she.cdn.dvmr.fr/bfmtv', { stream: true }).then(stream => {
-    broadcast.play(stream);
-});
-
-client.login('YOUR_TOKEN');
+client.login(process.env.DISCORD_BOT_TOKEN);
